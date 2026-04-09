@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.vscode/
+.idea/
+
+# Distribution / packaging
+build/
+dist/
+*.spec
+
+# Project specific
+config.json
+cache/
+logs/
+
+# Optional: if you use a virtual environment
+venv/
+.venv/
+env/
