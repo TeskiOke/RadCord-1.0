@@ -12,7 +12,7 @@ SIDEBAR_STYLE = """
 QWidget#sidebar { background: #000000; }
 QLabel#server-name {
     color: #ffffff; font-size: 15px; font-weight: 800; font-family: 'Segoe UI';
-    padding: 10px 16px; border-bottom: 1px solid #111111;
+    padding: 10px 16px;
 }
 QLabel.section-header {
     color: #80848e; font-size: 11px; font-weight: 800; font-family: 'Segoe UI';
@@ -41,7 +41,7 @@ QPushButton.voice-btn[active="true"] { color: {accent}; font-weight: 600; }
 USERS_STYLE = """
 QWidget#users-panel {
     background: #000000;
-    border-left: 1px solid #111111;
+    border-left: 1px solid #333333;
 }
 QLabel.section-header {
     color: #80848e;
@@ -119,7 +119,7 @@ class UserRow(QWidget):
         self.setFixedHeight(40)
         self.setAttribute(Qt.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 0, 12, 0)
+        lay.setContentsMargins(12, 4, 12, 4)
         lay.setSpacing(8)
 
         self._avatar = AvatarDot(nickname[:1], color)
@@ -190,9 +190,11 @@ class VoiceUserRow(QWidget):
         self._accent = accent_color
         self._muted = muted
         self.setFixedHeight(24)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(32, 0, 12, 0)
+        lay.setContentsMargins(32, 2, 12, 2)
         lay.setSpacing(6)
 
         # Avatar container for speaking ring
@@ -321,6 +323,7 @@ class Sidebar(QWidget):
         self._config = config
         self._accent = accent_color
         self.setObjectName("sidebar")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self._apply_style()
 
 
@@ -328,8 +331,7 @@ class Sidebar(QWidget):
         self._active_voice = None # which voice channel we are in
         self._channel_btns: dict[str, QPushButton] = {}
         self._voice_btns: dict[str, QPushButton] = {}
-        self._voice_user_lists: dict[str, QVBoxLayout] = {} # channel -> layout
-        self._voice_user_widgets: dict[str, list[QWidget]] = {} # channel -> list
+        self._vc_user_widgets: dict[str, QWidget] = {} # channel -> container widget
         self._in_voice = False
 
         self._build_ui()
@@ -351,15 +353,26 @@ class Sidebar(QWidget):
         self._apply_style()
         self.sync_voice_users()
 
+    def set_network_name(self, name: str):
+        self._name_lbl.setText(f"📡  {name}")
+
     def _build_ui(self):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
         net_name = self._config.get("network_name", "RadCord")
-        name_lbl = QLabel(f"📡  {net_name}", objectName="server-name")
-        name_lbl.setWordWrap(True)
-        lay.addWidget(name_lbl)
+        self._name_lbl = QLabel(f"📡  {net_name}", objectName="server-name")
+        self._name_lbl.setFixedHeight(46)
+        self._name_lbl.setWordWrap(True)
+        lay.addWidget(self._name_lbl)
+        
+        h_line = QFrame()
+        h_line.setFrameShape(QFrame.HLine)
+        h_line.setFrameShadow(QFrame.Plain)
+        h_line.setFixedHeight(2)
+        h_line.setStyleSheet("background-color: #2e2e30; border: none;")
+        lay.addWidget(h_line)
 
         # Text channels
         txt_hdr = QLabel("ТЕКСТОВЫЕ КАНАЛЫ")
@@ -397,13 +410,21 @@ class Sidebar(QWidget):
         lay.addWidget(vc_hdr)
 
         self._vc_list_w = QWidget()
+        self._vc_list_w.setAttribute(Qt.WA_StyledBackground, True)
+        self._vc_list_w.setStyleSheet("background: transparent;")
         self._vc_list_lay = QVBoxLayout(self._vc_list_w)
         self._vc_list_lay.setContentsMargins(0, 0, 0, 0)
         self._vc_list_lay.setSpacing(0)
-        lay.addWidget(self._vc_list_w)
+        self._vc_list_lay.setAlignment(Qt.AlignTop)
         
         # Add default channel
         self.add_voice_channel("Голосовой")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._vc_list_w)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        lay.addWidget(scroll, 1)
 
         lay.addStretch()
 
@@ -445,12 +466,13 @@ class Sidebar(QWidget):
 
         # Container for users
         user_list_w = QWidget()
+        user_list_w.setAttribute(Qt.WA_StyledBackground, True)
+        user_list_w.setStyleSheet("background: transparent;")
         user_lay = QVBoxLayout(user_list_w)
         user_lay.setContentsMargins(0, 0, 0, 0)
         user_lay.setSpacing(0)
         self._vc_list_lay.addWidget(user_list_w)
-        self._voice_user_lists[name] = user_lay
-        self._voice_user_widgets[name] = []
+        self._vc_user_widgets[name] = user_list_w
 
 
 
@@ -460,7 +482,13 @@ class Sidebar(QWidget):
         if btn:
             self._vc_list_lay.removeWidget(btn)
             btn.deleteLater()
-            if self._active_voice == name:
+            
+        user_w = self._vc_user_widgets.pop(name, None)
+        if user_w:
+            self._vc_list_lay.removeWidget(user_w)
+            user_w.deleteLater()
+
+        if self._active_voice == name:
                 self._toggle_voice(name) # Force leave
 
     def _request_remove_channel(self, name: str):
@@ -523,8 +551,8 @@ class Sidebar(QWidget):
 
 
 
-    def sync_voice_users(self, *args):
-        """Update the sidebar to show who is in which voice channel."""
+    def sync_voice_users(self):
+        """Update the UI rows for all voice channels."""
         from ui.app import MainWindow
         from PySide6.QtWidgets import QApplication
         
@@ -532,57 +560,56 @@ class Sidebar(QWidget):
         if not main_win or not main_win._mesh:
             return
 
-        # 1. Clear existing rows from ALL voice channel layouts
-        for name in self._voice_user_lists:
-            lay = self._voice_user_lists[name]
+        # 1. Clear existing rows
+        for vc_name, user_list_w in self._vc_user_widgets.items():
+            lay = user_list_w.layout()
             while lay.count():
                 item = lay.takeAt(0)
                 if item.widget():
                     item.widget().deleteLater()
-            if name in self._voice_user_widgets:
-                self._voice_user_widgets[name].clear()
+            
+            users_in_ch_count = 0
+            
+            # 2. Add Local User (Self)
+            if main_win._audio.in_voice and main_win._voice_ch_name == vc_name:
+                vbar = main_win._voice_bar
+                speaking = getattr(main_win._audio, 'is_speaking', False)
+                row = VoiceUserRow(self._config["device_id"], self._config["nickname"], self._config["avatar_color"], 
+                                   accent_color=self._accent, is_self=True, 
+                                   muted=vbar._muted, deafened=vbar._deafened, speaking=speaking)
+                lay.addWidget(row)
+                users_in_ch_count += 1
 
-        # 2. Add Local User (Self)
-        if main_win._audio.in_voice and main_win._voice_ch_name:
-            ch_name = main_win._voice_ch_name
-            if ch_name in self._voice_user_lists:
-                 # Local user speaking state from _audio
-                 speaking = getattr(main_win._audio, 'is_speaking', False)
-                 vbar = main_win._voice_bar
-                 w = VoiceUserRow(self._config["device_id"], self._config["nickname"], self._config["avatar_color"], 
-                                  accent_color=self._accent, is_self=True, muted=vbar._muted, deafened=vbar._deafened, speaking=speaking)
-                 self._voice_user_lists[ch_name].addWidget(w)
-
-                 self._voice_user_widgets[ch_name].append(w)
-
-        # 3. Add Remote Peers
-        for p in main_win._mesh.peers.values():
-            if not p.in_voice:
-                continue
-            # Accept peer if: they share current network, OR their network_ids is empty
-            # (can happen during a timing race — peer connected before network IDs were synced)
-            peer_nets = p.network_ids
-            if peer_nets and main_win._current_net_id not in peer_nets:
-                continue
-            ch_name = getattr(p, "voice_channel", "Голосовой")
-            if not ch_name:
-                ch_name = "Голосовой"
-            if ch_name in self._voice_user_lists:
-                speaking = getattr(p, "is_speaking", False)
-                w = VoiceUserRow(p.device_id, p.nickname, p.avatar_color, accent_color=self._accent,
-                                 is_self=False, muted=p.muted, deafened=p.deafened, speaking=speaking)
-                w.volume_changed.connect(self.user_volume_changed.emit)
-                self._voice_user_lists[ch_name].addWidget(w)
-                self._voice_user_widgets[ch_name].append(w)
+            # 3. Add Remote Peers
+            for p in main_win._mesh.peers.values():
+                if not p.in_voice:
+                    continue
+                # Match channel name
+                ch_name = getattr(p, "voice_channel", "Голосовой")
+                if ch_name == vc_name:
+                    # Check if peer is in current network
+                    if main_win._current_net_id and main_win._current_net_id not in p.network_ids:
+                        continue
+                        
+                    speaking = getattr(p, "is_speaking", False)
+                    row = VoiceUserRow(p.device_id, p.nickname, p.avatar_color, accent_color=self._accent,
+                                     is_self=False, muted=p.muted, deafened=p.deafened, speaking=speaking)
+                    row.volume_changed.connect(self.user_volume_changed.emit)
+                    lay.addWidget(row)
+                    users_in_ch_count += 1
+            
+            # 4. Collapse if empty
+            user_list_w.setVisible(users_in_ch_count > 0)
 
 
 
 
     def update_voice_speaking(self, device_id: str, speaking: bool):
-        for w_list in self._voice_user_widgets.values():
-            for w in w_list:
-                if w.device_id == device_id:
-                    # In VoiceUserRow, set_speaking evaluates (speaking, muted)
+        for container in self._vc_user_widgets.values():
+            lay = container.layout()
+            for i in range(lay.count()):
+                w = lay.itemAt(i).widget()
+                if isinstance(w, VoiceUserRow) and w.device_id == device_id:
                     w.set_speaking(speaking, getattr(w, '_muted', False))
                     return
 
@@ -603,6 +630,7 @@ class UsersPanel(QWidget):
         self._config = config
         self._accent = accent_color
         self.setObjectName("users-panel")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setFixedWidth(200)
         self.setStyleSheet(USERS_STYLE)
 

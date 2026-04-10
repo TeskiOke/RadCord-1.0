@@ -13,8 +13,9 @@ from ui.chat_view import AvatarLabel
 logger = logging.getLogger("voice_bar")
 
 STYLE = """
-QWidget {
+QWidget#voice-bar {
     background: #000000;
+    border-top: 1px solid #333333;
 }
 QWidget#active-call {
     background: #000000;
@@ -83,7 +84,6 @@ class VoiceBar(QWidget):
         self._speaking = False
         self._sharing = False
         
-        self.setFixedWidth(240)
         self._build_ui()
 
     def _build_ui(self):

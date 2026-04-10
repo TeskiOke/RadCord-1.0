@@ -14,8 +14,10 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QLabel, QFrame, QSizePolicy, QStackedWidget,
     QMenu, QWidgetAction
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QEvent, QUrl, Signal
+import winsound
 from PySide6.QtGui import QFont, QColor
+
 
 
 from shared.protocol import (
@@ -116,8 +118,8 @@ QMenu::separator {{
 
 THEMES = {
     "dark": {
-        "bg_main": "#000000",   # True Black
-        "border": "#111111",   # Subtle dark border
+        "bg_main": "#000000",
+        "border": "#2e2e30",   # Soft visible grey
         "text_main": "#ffffff",
         "text_muted": "#96989d", 
         "bg_input": "#000000", 
@@ -132,6 +134,9 @@ THEMES = {
 
 
 class MainWindow(QMainWindow):
+    _hotkey_mute_signal = Signal()
+    _hotkey_deafen_signal = Signal()
+
     def __init__(self, config: dict, async_loop: asyncio.AbstractEventLoop):
         super().__init__()
         self._config     = config # Combined config: profile + networks
@@ -156,17 +161,17 @@ class MainWindow(QMainWindow):
         self._audio.on_audio_frame      = self._send_audio
         self._audio.on_speaking_change  = self._on_speaking_change
         # Open audio I/O streams immediately on launch
-        self._audio.start_streams()
-        # Screen capture (global)
-        self._screen.on_frame = self._send_screen_frame
-        # Apply saved hotkeys
-        self._apply_hotkeys()
-
-        # Apply initial volume levels
+        # Apply initial volume levels and device selection from config
         prof = self._config["profile"]
         self._audio.set_master_volume(prof.get("master_volume", 100) / 100.0)
         self._audio.set_peers_volume(prof.get("peers_volume", 100) / 100.0)
         self._audio.set_ui_volume(prof.get("ui_volume", 100) / 100.0)
+        self._audio.vad_threshold = prof.get("vad_threshold", 400)
+        self._audio.device_in  = prof.get("audio_input_device", None)
+        self._audio.device_out = prof.get("audio_output_device", None)
+        self._audio.start_streams()
+        # Screen capture (global)
+        self._screen.on_frame = self._send_screen_frame
 
         # Start core networking once for ALL networks
         mesh_profile = dict(self._config["profile"])
@@ -189,12 +194,34 @@ class MainWindow(QMainWindow):
 
         asyncio.run_coroutine_threadsafe(self._mesh.start_server(), self._loop)
         asyncio.run_coroutine_threadsafe(self._discovery.start(), self._loop)
-
-
         self.setWindowTitle("RadCord")
-        self.setMinimumSize(1000, 650)
+        self.setMinimumSize(800, 600)
         self.resize(1200, 750)
         self.setWindowFlag(Qt.FramelessWindowHint)
+        self.setWindowFlag(Qt.WindowSystemMenuHint)
+        
+        # Native Windows Frameless resize hack
+        import sys
+        if sys.platform == 'win32':
+            import ctypes
+            hwnd = self.winId().__int__()
+            user32 = ctypes.windll.user32
+            try:
+                style = user32.GetWindowLongPtrW(hwnd, -16)
+                user32.SetWindowLongPtrW(hwnd, -16, style | 0x00040000 | 0x00C00000 | 0x00020000 | 0x00010000)
+            except AttributeError:
+                style = user32.GetWindowLongW(hwnd, -16)
+                user32.SetWindowLongW(hwnd, -16, style | 0x00040000 | 0x00C00000 | 0x00020000 | 0x00010000)
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0020|0x0002|0x0001|0x0004|0x0200)
+        
+        # Audio feedback storage
+        import os
+        self._ui_sounds = {}
+        for snd in ("mute", "unmute", "deafen", "undeafen"):
+            path = os.path.abspath(os.path.join(os.getcwd(), "assets", "sounds", f"{snd}.wav"))
+            if os.path.exists(path):
+                self._ui_sounds[snd] = path
+        
         self._apply_theme()
 
         # Build initial server bar
@@ -244,11 +271,20 @@ class MainWindow(QMainWindow):
 
         # 1. Server Bar (Far Left)
         self._server_bar = ServerBar()
+        self._server_bar.setAttribute(Qt.WA_StyledBackground, True)
+        self._server_bar.setObjectName("server-bar")
         self._server_bar.network_selected.connect(self._select_network)
         self._server_bar.add_requested.connect(self._prompt_add_network)
         self._server_bar.remove_requested.connect(self._remove_network)
         self._server_bar.rename_requested.connect(self._rename_network)
         content.addWidget(self._server_bar)
+
+        server_line = QFrame()
+        server_line.setFrameShape(QFrame.VLine)
+        server_line.setFrameShadow(QFrame.Plain)
+        server_line.setFixedWidth(2)
+        server_line.setStyleSheet("background-color: #2e2e30; border: none;")
+        content.addWidget(server_line)
 
         # 2. Main content stack
         self._main_stack = QStackedWidget()
@@ -278,10 +314,18 @@ class MainWindow(QMainWindow):
         self._sidebar.voice_join_requested.connect(self._join_voice)
         self._sidebar.voice_leave_requested.connect(self._leave_voice)
         self._sidebar.user_volume_changed.connect(lambda d, v: self._audio.set_peer_volume(d, v))
+        
+        # Thread-safe hotkey connections
+        self._hotkey_mute_signal.connect(self._voice_bar._toggle_mute)
+        self._hotkey_deafen_signal.connect(self._voice_bar._toggle_deafen)
+        
+        # Apply hotkeys now that voice_bar exists
+        self._apply_hotkeys()
 
 
         
         left_panel = QWidget(objectName="left-panel")
+        left_panel.setAttribute(Qt.WA_StyledBackground, True)
         left_panel.setFixedWidth(240) # Standard Discord sidebar width
         left_lay = QVBoxLayout(left_panel)
         left_lay.setContentsMargins(0, 0, 0, 0)
@@ -290,7 +334,12 @@ class MainWindow(QMainWindow):
         left_lay.addWidget(self._voice_bar)
         active_lay.addWidget(left_panel)
 
-
+        v_line = QFrame()
+        v_line.setFrameShape(QFrame.VLine)
+        v_line.setFrameShadow(QFrame.Plain)
+        v_line.setFixedWidth(2)
+        v_line.setStyleSheet("background-color: #2e2e30; border: none;")
+        active_lay.addWidget(v_line)
 
         # Center area
         center_w = QWidget()
@@ -301,6 +350,7 @@ class MainWindow(QMainWindow):
 
         # Top bar (channel info)
         self._top_info_bar = QWidget(objectName="top-bar")
+        self._top_info_bar.setAttribute(Qt.WA_StyledBackground, True)
         self._top_info_bar.setFixedHeight(48)
         tb_lay = QHBoxLayout(self._top_info_bar)
         tb_lay.setContentsMargins(16, 0, 16, 0)
@@ -329,6 +379,7 @@ class MainWindow(QMainWindow):
         if_lay = QHBoxLayout(self._input_frame)
         if_lay.setContentsMargins(16, 12, 16, 12) 
         self._msg_input = QLineEdit(objectName="msg-input")
+        self._msg_input.installEventFilter(self)
 
 
         self._msg_input.setPlaceholderText("Написать в #general...")
@@ -766,8 +817,40 @@ class MainWindow(QMainWindow):
 
     # NOTE: the real _on_voice_state(device_id, in_voice, speaking) is above (line ~508).
 
+    def _play_ui_sound(self, name: str):
+        if not hasattr(self, "_sound_paths_vol"):
+            import wave, io, os, tempfile, numpy as np
+            self._sound_paths_vol = {}
+            volume = self._config["profile"].get("ui_volume", 100) / 100.0
+            for s_name, s_path in self._ui_sounds.items():
+                if not os.path.exists(s_path):
+                    continue
+                with wave.open(s_path, 'rb') as wf:
+                    frames = wf.readframes(wf.getnframes())
+                    nch, sw, fr, nf = wf.getnchannels(), wf.getsampwidth(), wf.getframerate(), wf.getnframes()
+                audio = np.frombuffer(frames, dtype=np.int16).copy()
+                if volume != 1.0:
+                    audio = np.clip(audio * volume, -32768, 32767).astype(np.int16)
+                out_io = io.BytesIO()
+                with wave.open(out_io, 'wb') as ow:
+                    ow.setnchannels(nch); ow.setsampwidth(sw); ow.setframerate(fr)
+                    ow.writeframes(audio.tobytes())
+                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=tempfile.gettempdir())
+                tmp.write(out_io.getvalue()); tmp.close()
+                self._sound_paths_vol[s_name] = tmp.name
+
+        if name in getattr(self, "_sound_paths_vol", {}):
+            import winsound, threading
+            path = self._sound_paths_vol[name]
+            threading.Thread(
+                target=winsound.PlaySound,
+                args=(path, winsound.SND_FILENAME | winsound.SND_NODEFAULT),
+                daemon=True
+            ).start()
+
     def _on_mute(self, muted: bool):
         self._audio.muted = muted
+        self._play_ui_sound("mute" if muted else "unmute")
         self._voice_grid.update_muted(self._config["profile"]["device_id"], muted)
         if self._mesh and self._voice_net_id:
             asyncio.run_coroutine_threadsafe(
@@ -785,6 +868,7 @@ class MainWindow(QMainWindow):
 
     def _on_deafen(self, deafened: bool):
         self._audio.deafened = deafened
+        self._play_ui_sound("deafen" if deafened else "undeafen")
 
     def _open_settings(self):
         # Fix spacebar bug by clearing focus from the settings button
@@ -853,7 +937,10 @@ class MainWindow(QMainWindow):
         if "theme" in changed or "app_color" in changed:
             self._apply_theme()
             
-        if any(c in changed for c in ["audio_input", "audio_output", "vad_threshold"]):
+        if any(c in changed for c in ["audio_input", "audio_output"]):
+            prof = self._config["profile"]
+            self._audio.device_in  = prof.get("audio_input_device", None)
+            self._audio.device_out = prof.get("audio_output_device", None)
             was_in_voice = self._audio.in_voice
             self._audio.stop_streams()
             self._audio.start_streams()
@@ -861,6 +948,10 @@ class MainWindow(QMainWindow):
             if was_in_voice:
                 self._audio.in_voice = True
                 QTimer.singleShot(400, lambda: self._loop.call_soon_threadsafe(self._audio.start_capture_task))
+
+        if "vad_threshold" in changed:
+            new_thresh = self._config["profile"].get("vad_threshold", 400)
+            self._audio.vad_threshold = new_thresh
 
         if "hotkeys" in changed:
             self._apply_hotkeys()
@@ -871,6 +962,12 @@ class MainWindow(QMainWindow):
             self._audio.set_master_volume(prof.get("master_volume", 100) / 100.0)
             self._audio.set_peers_volume(prof.get("peers_volume", 100) / 100.0)
             self._audio.set_ui_volume(prof.get("ui_volume", 100) / 100.0)
+            if "ui_volume" in changed and hasattr(self, "_sound_paths_vol"):
+                import os
+                for p in self._sound_paths_vol.values():
+                    try: os.unlink(p)
+                    except Exception: pass
+                delattr(self, "_sound_paths_vol")
 
 
 
@@ -894,43 +991,48 @@ class MainWindow(QMainWindow):
         hk_mute   = hotkeys.get("hotkey_mute", "").strip()
         hk_deafen = hotkeys.get("hotkey_deafen", "").strip()
 
-        def _do_mute():
-            from PySide6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(self._voice_bar._btn_mute, "click", Qt.QueuedConnection)
+        def _do_mute(*args, **kwargs):
+            self._hotkey_mute_signal.emit()
 
-        def _do_deafen():
-            from PySide6.QtCore import QMetaObject, Qt
-            QMetaObject.invokeMethod(self._voice_bar._btn_deafen, "click", Qt.QueuedConnection)
+        def _do_deafen(*args, **kwargs):
+            self._hotkey_deafen_signal.emit()
+
+        import logging
+        logger = logging.getLogger("app")
 
         if hk_mute:
-            if hk_mute in ("mouse4", "mouse5", "mouse3 (СКМ)"):
-                btn_name = {"mouse4": "x", "mouse5": "x2", "mouse3 (СКМ)": "middle"}.get(hk_mute, "x")
+            if hk_mute in ("mouse4", "mouse5", "mouse3", "mouse3 (СКМ)"):
+                btn_name = {"mouse4": "x", "mouse5": "x2", "mouse3": "middle", "mouse3 (СКМ)": "middle"}.get(hk_mute, "x")
                 try:
                     import mouse as ms
                     ms.on_button(_do_mute, buttons=(btn_name,), types=("down",))
+                    logger.info(f"Mouse mute hotkey set: {btn_name}")
                 except Exception as e:
-                    import logging; logging.getLogger("app").warning(f"Mouse hotkey failed: {e}")
+                    logger.warning(f"Mouse hotkey failed: {e}")
             else:
                 try:
                     import keyboard as kb
                     kb.add_hotkey(hk_mute, _do_mute, suppress=False)
+                    logger.info(f"Keyboard mute hotkey set: {hk_mute}")
                 except Exception as e:
-                    import logging; logging.getLogger("app").warning(f"Keyboard hotkey failed: {e}")
+                    logger.warning(f"Keyboard hotkey failed: {e}")
 
         if hk_deafen:
-            if hk_deafen in ("mouse4", "mouse5", "mouse3 (СКМ)"):
-                btn_name = {"mouse4": "x", "mouse5": "x2", "mouse3 (СКМ)": "middle"}.get(hk_deafen, "x2")
+            if hk_deafen in ("mouse4", "mouse5", "mouse3", "mouse3 (СКМ)"):
+                btn_name = {"mouse4": "x", "mouse5": "x2", "mouse3": "middle", "mouse3 (СКМ)": "middle"}.get(hk_deafen, "x2")
                 try:
                     import mouse as ms
                     ms.on_button(_do_deafen, buttons=(btn_name,), types=("down",))
+                    logger.info(f"Mouse deafen hotkey set: {btn_name}")
                 except Exception as e:
-                    import logging; logging.getLogger("app").warning(f"Mouse hotkey failed: {e}")
+                    logger.warning(f"Mouse hotkey failed: {e}")
             else:
                 try:
                     import keyboard as kb
                     kb.add_hotkey(hk_deafen, _do_deafen, suppress=False)
+                    logger.info(f"Keyboard deafen hotkey set: {hk_deafen}")
                 except Exception as e:
-                    import logging; logging.getLogger("app").warning(f"Keyboard hotkey failed: {e}")
+                    logger.warning(f"Keyboard hotkey failed: {e}")
 
 
     def _on_voice_frame(self, peer: Peer, payload: bytes):
@@ -956,6 +1058,35 @@ class MainWindow(QMainWindow):
 
     def _toggle_max(self):
         self.showNormal() if self.isMaximized() else self.showMaximized()
+
+    def nativeEvent(self, eventType, message):
+        if eventType != b"windows_generic_MSG":
+            return super().nativeEvent(eventType, message)
+
+        import sys
+        if sys.platform == 'win32':
+            import ctypes.wintypes
+            msg = ctypes.wintypes.MSG.from_address(message.__int__())
+            if msg.message == 0x0083: # WM_NCCALCSIZE
+                if msg.wParam:
+                    return True, 0
+                    
+            if msg.message == 0x0084: # WM_NCHITTEST
+                pos = self.mapFromGlobal(self.cursor().pos())
+                x, y = pos.x(), pos.y()
+                w, h = self.width(), self.height()
+                m = 8 # Resize grab margin
+
+                if x < m and y < m: return True, 13 # HTTOPLEFT
+                if x > w - m and y < m: return True, 14 # HTTOPRIGHT
+                if x < m and y > h - m: return True, 16 # HTBOTTOMLEFT
+                if x > w - m and y > h - m: return True, 17 # HTBOTTOMRIGHT
+                if x < m: return True, 10 # HTLEFT
+                if x > w - m: return True, 11 # HTRIGHT
+                if y < m: return True, 12 # HTTOP
+                if y > h - m: return True, 15 # HTBOTTOM
+
+        return super().nativeEvent(eventType, message)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and event.position().y() < 40:

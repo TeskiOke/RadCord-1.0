@@ -82,7 +82,8 @@ class ServerBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(72)
-        self.setStyleSheet("background: #1e1f22;")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: transparent;")
         
         self._icons = {}
         self._active_id = None

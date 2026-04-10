@@ -120,7 +120,7 @@ class VoicePeerCard(QWidget):
         # ── Card background ──
         self._bg = QWidget()
         self._bg.setObjectName("cardBg")
-        self._bg.setStyleSheet("#cardBg { background: #1a1b1e; border-radius: 10px; border: 3px solid transparent; }")
+        self._bg.setStyleSheet("#cardBg { background: #000000; border-radius: 10px; border: 3px solid transparent; }")
         bg_lay = QVBoxLayout(self._bg)
         bg_lay.setContentsMargins(8, 12, 8, 8)
         bg_lay.setSpacing(6)
@@ -183,11 +183,11 @@ class VoicePeerCard(QWidget):
         accent = self._accent if self._accent else "#7289da"
         if speaking and not self._is_muted:
             self._bg.setStyleSheet(
-                f"#cardBg {{ background: #1a1b1e; border-radius: 10px; border: 3px solid {accent}; }}"
+                f"#cardBg {{ background: #000000; border-radius: 10px; border: 3px solid {accent}; }}"
             )
         else:
             self._bg.setStyleSheet(
-                "#cardBg { background: #1a1b1e; border-radius: 10px; border: 3px solid transparent; }"
+                "#cardBg { background: #000000; border-radius: 10px; border: 3px solid transparent; }"
             )
 
     def set_muted(self, muted: bool):
@@ -308,6 +308,8 @@ class VoiceGridWidget(QWidget):
 
     def __init__(self, accent_color: str = "#7289da", parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background: #000000;")
         self._accent = accent_color
         self._cards: Dict[str, VoicePeerCard] = {}
 
@@ -317,10 +319,12 @@ class VoiceGridWidget(QWidget):
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("QScrollArea { border: none; background: #111214; }")
-
+        self.scroll.setStyleSheet("QScrollArea { border: none; background: #000000; }")
+        self.scroll.viewport().setStyleSheet("background: #000000;")
+        
         self.container = GridContainer()
-        self.container.setStyleSheet("background: #111214;")
+        self.container.setAttribute(Qt.WA_StyledBackground, True)
+        self.container.setStyleSheet("background: #000000;")
 
         self.scroll.setWidget(self.container)
         lay.addWidget(self.scroll)

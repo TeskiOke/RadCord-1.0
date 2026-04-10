@@ -183,7 +183,6 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._tab_appearance(), "🎨  Внешний вид")
         self._tabs.addTab(self._tab_mic(),     "🎤  Микрофон")
         self._tabs.addTab(self._tab_speaker(), "🔊  Динамик")
-        self._tabs.addTab(self._tab_audio_mixer(), "🎚  Звук")
         self._tabs.addTab(self._tab_hotkeys(),  "⌨️  Горячие клавиши")
         self._tabs.addTab(self._tab_logs(),    "📝  Логи")
         root.addWidget(self._tabs, 1)
@@ -347,7 +346,7 @@ class SettingsDialog(QDialog):
         lay.addWidget(hint)
         row = QHBoxLayout()
         self._sens_slider = QSlider(Qt.Horizontal)
-        self._sens_slider.setRange(50, 2000)
+        self._sens_slider.setRange(0, 2000)
         self._sens_slider.setValue(self._config.get("vad_threshold", 400))
         self._sens_slider.valueChanged.connect(self._on_vad_changed)
         row.addWidget(self._sens_slider)
@@ -434,6 +433,7 @@ class SettingsDialog(QDialog):
         saved_spk = self._config.get("audio_output_device")
         self._spk_output_devices = [None]
         try:
+            import sounddevice as sd
             default_api = sd.default.hostapi
             devs = sd.query_devices()
             for i, d in enumerate(devs):
@@ -446,18 +446,10 @@ class SettingsDialog(QDialog):
             pass
         lay.addWidget(self._spk_combo)
 
-        lay.addStretch()
-        return w
-
-
-    # ── Audio Mixer ───────────────────────────────────────────────────────────
-
-    def _tab_audio_mixer(self) -> QWidget:
-        w = QWidget(objectName="tab-content")
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(16)
-
+        lay.addSpacing(24)
+        lay.addWidget(self._divider())
+        lay.addSpacing(16)
+        
         lay.addWidget(self._section("Громкость"))
 
         def _make_vol_row(label: str, config_key: str, default: int = 100):
@@ -482,23 +474,20 @@ class SettingsDialog(QDialog):
         self._master_vol_slider = _make_vol_row(
             "ОБЩАЯ ГРОМКОСТЬ ПРИЛОЖЕНИЯ", "master_volume", 100
         )
-        hint = QLabel("Глобальная громкость — влияет на всё.")
-        hint.setProperty("class", "hint"); lay.addWidget(hint)
-
         self._peers_vol_slider = _make_vol_row(
-            "ГРОМКОСТЬ УЧАСТНИКОВ", "peers_volume", 100
+            "ГРОМКОСТЬ УЧАСТНИКОВ (ГОЛОС)", "peers_volume", 100
         )
-        hint2 = QLabel("Снизь, если все слышно слишком громко.")
-        hint2.setProperty("class", "hint"); lay.addWidget(hint2)
-
         self._ui_vol_slider = _make_vol_row(
             "СИСТЕМНЫЕ ЗВУКИ ПО", "ui_volume", 100
         )
-        hint3 = QLabel("Уведомления, звуки входа/выхода из ГК.")
-        hint3.setProperty("class", "hint"); lay.addWidget(hint3)
 
         lay.addStretch()
         return w
+
+
+    # ── Audio Mixer ───────────────────────────────────────────────────────────
+
+    # REMOVED _tab_audio_mixer (Merged into speaker)
 
     # ── Hotkeys ───────────────────────────────────────────────────────────────
 
@@ -510,7 +499,7 @@ class SettingsDialog(QDialog):
 
         lay.addWidget(self._section("Горячие клавиши"))
 
-        hint = QLabel("Нажмите на поле и нажмите нужную клавишу или выберите кнопку мыши из списка.")
+        hint = QLabel("Нажмите на поле и нажмите нужную клавишу на клавиатуре или кнопку мыши.")
         hint.setProperty("class", "hint")
         hint.setWordWrap(True)
         lay.addWidget(hint)
@@ -522,7 +511,7 @@ class SettingsDialog(QDialog):
             row = QHBoxLayout()
 
             field = QLineEdit()
-            field.setPlaceholderText("Не назначено")
+            field.setPlaceholderText("Нажмите для выбора...")
             field.setReadOnly(True)
             field.setText(hotkeys.get(config_key, ""))
             field.setStyleSheet(
@@ -531,46 +520,48 @@ class SettingsDialog(QDialog):
                 "QLineEdit:focus{border:1px solid " + self._app_color + ";}"
             )
 
-            # Capture keyboard press
+            # Capture keyboard and mouse
             def _on_key(e, f=field):
                 from PySide6.QtCore import Qt as _Qt
                 key = e.key()
+                if key == _Qt.Key_Escape:
+                    f.setText("")
+                    return
                 mods = e.modifiers()
                 parts = []
                 if mods & _Qt.ControlModifier: parts.append("ctrl")
                 if mods & _Qt.AltModifier: parts.append("alt")
                 if mods & _Qt.ShiftModifier: parts.append("shift")
-                key_name = e.text().lower().strip()
+                from PySide6.QtGui import QKeySequence
+                key_name = QKeySequence(key).toString().lower().strip()
                 if not key_name or key in (_Qt.Key_Control, _Qt.Key_Alt, _Qt.Key_Shift, _Qt.Key_Meta):
                     return
                 parts.append(key_name)
                 f.setText("+".join(parts))
 
+            def _on_mouse(e, f=field):
+                from PySide6.QtCore import Qt as _Qt
+                btn = e.button()
+                if btn == _Qt.XButton1: f.setText("mouse4")
+                elif btn == _Qt.XButton2: f.setText("mouse5")
+                elif btn == _Qt.MiddleButton: f.setText("mouse3")
+                elif btn == _Qt.LeftButton and f.hasFocus(): pass # Allow focus
+                
             field.keyPressEvent = _on_key
+            field.mousePressEvent = _on_mouse
 
             clear_btn = QPushButton("✕")
-            clear_btn.setFixedSize(36, 36)
+            clear_btn.setFixedSize(40, 40)
+            clear_btn.setCursor(Qt.PointingHandCursor)
             clear_btn.setStyleSheet(
-                "QPushButton{background:#1a1a1a;color:#b5bac1;border:1px solid #222;"
-                "border-radius:4px;font-size:14px;}"
-                "QPushButton:hover{background:#222;color:white;}"
+                "QPushButton{background:#111;color:#f04747;border:1px solid #222;"
+                "border-radius:4px;font-size:16px;font-weight:bold;}"
+                "QPushButton:hover{background:#f04747;color:white;}"
             )
             clear_btn.clicked.connect(lambda: field.setText(""))
 
-            # Mouse button combo
-            mouse_combo = QComboBox()
-            mouse_combo.addItems(["— мышь —", "mouse4", "mouse5", "mouse3 (СКМ)"])
-            mouse_combo.setFixedWidth(150)
-            cur = hotkeys.get(config_key, "")
-            if cur in ("mouse4", "mouse5", "mouse3"):
-                mouse_combo.setCurrentText(cur)
-            mouse_combo.currentIndexChanged.connect(
-                lambda i, c=mouse_combo, f=field: f.setText(c.currentText()) if i > 0 else None
-            )
-
             row.addWidget(field, 1)
             row.addWidget(clear_btn)
-            row.addWidget(mouse_combo)
             lay.addLayout(row)
             return field
 
@@ -716,8 +707,8 @@ class SettingsDialog(QDialog):
             changed.append("hotkeys")
         self._config["hotkeys"] = hotkeys
 
-        from core.identity import save_config
-        save_config(self._config)
+        # core.identity.save_config is called securely in app.py
+        # to avoid wiping nested data structures like networks array
         self.saved.emit(self._config, changed)
         logger.info("Settings saved successfully.")
         

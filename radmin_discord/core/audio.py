@@ -63,6 +63,15 @@ class AudioManager:
         self._mic_test_queue: queue.Queue = queue.Queue(maxsize=10)
         self.vad_threshold = AUDIO_RMS_THRESHOLD
 
+        # Selected devices (None = system default)
+        self.device_in:  Optional[int] = None
+        self.device_out: Optional[int] = None
+
+        # Envelope gains for smooth fade-in / fade-out
+        self._envelope_gain: float = 0.0   # current gain (0.0 to 1.0)
+        self._hold_counter:  int = 0       # frames to hold after signal below threshold
+        self._fade_release:  float = 0.92  # multiplier for exponential decay (~0.04 - 0.08 range)
+
 
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -73,23 +82,32 @@ class AudioManager:
         """Open audio I/O streams (call from any thread)."""
         self._running = True
         try:
-            self._in_stream = sd.InputStream(
+            in_kwargs = dict(
                 samplerate=AUDIO_SAMPLE_RATE,
                 channels=AUDIO_CHANNELS,
                 dtype=AUDIO_DTYPE,
                 blocksize=AUDIO_CHUNK_FRAMES,
                 callback=self._input_callback,
             )
-            self._out_stream = sd.OutputStream(
+            out_kwargs = dict(
                 samplerate=AUDIO_SAMPLE_RATE,
                 channels=AUDIO_CHANNELS,
                 dtype=AUDIO_DTYPE,
                 blocksize=AUDIO_CHUNK_FRAMES,
                 callback=self._output_callback,
             )
+            if self.device_in is not None:
+                in_kwargs["device"] = self.device_in
+            if self.device_out is not None:
+                out_kwargs["device"] = self.device_out
+
+            self._in_stream  = sd.InputStream(**in_kwargs)
+            self._out_stream = sd.OutputStream(**out_kwargs)
             self._in_stream.start()
             self._out_stream.start()
-            logger.info("Audio streams started")
+            in_name  = sd.query_devices(self.device_in)["name"]  if self.device_in  is not None else "default"
+            out_name = sd.query_devices(self.device_out)["name"] if self.device_out is not None else "default"
+            logger.info(f"Audio streams started — mic: {in_name!r}  speaker: {out_name!r}")
         except Exception as e:
             logger.error(f"Failed to start audio streams: {e}")
 
@@ -142,29 +160,50 @@ class AudioManager:
 
 
         if self._mic_test_active:
-            try:
-                self._mic_test_queue.put_nowait(indata[:, 0].copy())
-            except queue.Full:
-                pass
+            # Check threshold
+            if rms > self.vad_threshold:
+                self._hold_counter = 20 # Hold for ~400ms
+            
+            # If we are in signal or in 'tail' period, queue the frame
+            if rms > self.vad_threshold or self._hold_counter > 0:
+                try:
+                    self._mic_test_queue.put_nowait(indata[:, 0].copy())
+                except queue.Full:
+                    pass
+                if rms <= self.vad_threshold:
+                    self._hold_counter -= 1
 
         if not self._in_voice or self._muted:
             return
-        try:
-            self._capture_queue.put_nowait(indata[:, 0].copy())
-        except queue.Full:
-            pass  # drop frame if queue full
+
+        # Same logic for transmission capture
+        if rms > self.vad_threshold:
+            self._capture_hold = 20
+        
+        if rms > self.vad_threshold or getattr(self, "_capture_hold", 0) > 0:
+            try:
+                self._capture_queue.put_nowait(indata[:, 0].copy())
+            except queue.Full:
+                pass
+            if rms <= self.vad_threshold:
+                self._capture_hold -= 1
 
 
     def _output_callback(self, outdata, frames, time_info, status):
         mixed = np.zeros(frames, dtype=np.int32)
         
-        # Add mic test loopback if active
+        # Add mic test loopback with funnel fade
         if self._mic_test_active:
             try:
                 chunk = self._mic_test_queue.get_nowait()
-                mixed += chunk.astype(np.int32)
+                # Always approach target gain 1.0 if we have samples
+                self._envelope_gain = min(1.0, self._envelope_gain + 0.25)
+                mixed += (chunk.astype(np.float32) * self._envelope_gain).astype(np.int32)
             except queue.Empty:
-                pass
+                if self._envelope_gain > 0.001:
+                    # Funnel effect: exponential decay
+                    self._envelope_gain *= self._fade_release
+                    if self._envelope_gain < 0.001: self._envelope_gain = 0.0
 
         if not self._deafened and self._in_voice:
             with self._peer_lock:
@@ -217,23 +256,31 @@ class AudioManager:
 
             for chunk in chunks:
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-                is_speaking = rms > self.vad_threshold
-
-                # Hysteresis (hold time) to prevent choppy VAD
-                if is_speaking:
-                    self._vad_hold_frames = 15  # ~300ms hold
-                    is_speaking_held = True
+                is_active = rms > self.vad_threshold
+                
+                # Update speaking state (with hysteresis for UI)
+                if is_active:
+                    self._ui_hold = 15
+                    if not self._speaking:
+                        self._speaking = True
+                        if self.on_speaking_change:
+                            asyncio.ensure_future(self.on_speaking_change(True))
                 else:
-                    self._vad_hold_frames = getattr(self, "_vad_hold_frames", 0) - 1
-                    is_speaking_held = self._vad_hold_frames > 0
+                    self._ui_hold = getattr(self, "_ui_hold", 0) - 1
+                    if self._ui_hold <= 0 and self._speaking:
+                        self._speaking = False
+                        if self.on_speaking_change:
+                            asyncio.ensure_future(self.on_speaking_change(False))
 
-                if is_speaking_held != self._speaking:
-                    self._speaking = is_speaking_held
-                    if self.on_speaking_change:
-                        asyncio.ensure_future(self.on_speaking_change(is_speaking_held))
-
-                if is_speaking_held and self.on_audio_frame:
-                    audio_bytes = chunk.astype(np.int16).tobytes()
+                # Amplitude Envelope (the actual "funnel" for transmission)
+                if is_active:
+                    self._trans_gain = min(1.0, getattr(self, "_trans_gain", 0.0) + 0.3)
+                else:
+                    self._trans_gain = getattr(self, "_trans_gain", 0.0) * self._fade_release
+                
+                if self._trans_gain > 0.001:
+                    faded = (chunk.astype(np.float32) * self._trans_gain)
+                    audio_bytes = np.clip(faded, -32768, 32767).astype(np.int16).tobytes()
                     asyncio.ensure_future(self.on_audio_frame(audio_bytes))
 
     # ─────────────────────────────────────────────────────────────────────────
