@@ -1,4 +1,4 @@
-"""
+﻿"""
 screen_picker.py — Dialog to choose what to stream:
   - Monitor (all via mss)
   - Application window (via ctypes EnumWindows on Windows)
@@ -177,7 +177,6 @@ class ScreenPickerDialog(QDialog):
         self._build_ui()
         self._populate_sources()
 
-    # ─────────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)

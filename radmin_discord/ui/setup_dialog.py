@@ -1,4 +1,4 @@
-"""
+﻿"""
 setup_dialog.py — First-run wizard:
 1. Profile: Nickname, Avatar Color, Theme, App Color.
 2. Mode: Create Network or Find Network.
@@ -154,7 +154,6 @@ class SetupDialog(QDialog):
         lbl.setStyleSheet("color: #b9bbbe; font-size: 11px; font-weight: 700; letter-spacing: 1px;")
         return lbl
 
-    # ── Page 1: Profile ──────────────────────────────────────────────────────
     def _page_profile(self) -> QWidget:
         def rgb2hex(r, g, b): return f"#{r:02x}{g:02x}{b:02x}"
         preset_colors = [

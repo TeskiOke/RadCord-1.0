@@ -1,4 +1,4 @@
-"""
+﻿"""
 audio.py — Microphone capture + multi-peer audio mixing and playback.
 
 Architecture:
@@ -45,9 +45,18 @@ class AudioManager:
         self._peer_queues: Dict[str, queue.Queue] = {}
         self._volumes: Dict[str, float] = {}   # device_id -> volume multiplier
         self._local_mutes: Set[str] = set()    # device_id (local mute)
+
+        # Screen Stream Playback pipeline
+        self._stream_queues: Dict[str, queue.Queue] = {}
+        self._stream_volumes: Dict[str, float] = {}  # device_id -> volume multiplier (stream)
+
         self._master_volume = 1.0              # global multiplier
         self._peers_volume = 1.0               # global peer multiplier
         self._peer_lock = threading.Lock()
+
+        # System Capture (for our own stream)
+        self._system_capture_proc: Optional[asyncio.subprocess.Process] = None
+        self.on_stream_audio_ready: Optional[Callable] = None
 
         # sounddevice streams
         self._in_stream: Optional[sd.InputStream] = None
@@ -74,9 +83,7 @@ class AudioManager:
 
 
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Lifecycle
-    # ─────────────────────────────────────────────────────────────────────────
 
     def start_streams(self):
         """Open audio I/O streams (call from any thread)."""
@@ -142,9 +149,7 @@ class AudioManager:
             self._capture_task.cancel()
             self._capture_task = None
 
-    # ─────────────────────────────────────────────────────────────────────────
     # sounddevice callbacks (real-time audio thread, keep fast!)
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _input_callback(self, indata, frames, time_info, status):
         # Always calculate RMS for meter if requested
@@ -205,19 +210,35 @@ class AudioManager:
                     self._envelope_gain *= self._fade_release
                     if self._envelope_gain < 0.001: self._envelope_gain = 0.0
 
-        if not self._deafened and self._in_voice:
+        if not self._deafened:
             with self._peer_lock:
-                for did, q in self._peer_queues.items():
-                    if did in self._local_mutes:
-                        continue
+                # 2. Voices
+                if self._in_voice:
+                    for did, q in self._peer_queues.items():
+                        if did in self._local_mutes:
+                            continue
+                        try:
+                            chunk: np.ndarray = q.get_nowait()
+                            if len(chunk) == frames:
+                                # Peer individual volume * Global peers volume
+                                v = self._volumes.get(did, 1.0) * self._peers_volume
+                                if v != 1.0:
+                                    chunk = (chunk * v).astype(np.int32)
+                                mixed += chunk.astype(np.int32)
+                        except queue.Empty:
+                            pass
+                
+                # 3. Screen Streams (mixed even if not in voice, if unmuted)
+                for did, q in self._stream_queues.items():
                     try:
                         chunk: np.ndarray = q.get_nowait()
-                        if len(chunk) == frames:
-                            # Peer individual volume * Global peers volume
-                            v = self._volumes.get(did, 1.0) * self._peers_volume
-                            if v != 1.0:
-                                chunk = (chunk * v).astype(np.int32)
-                            mixed += chunk.astype(np.int32)
+                        # Stream volume: 0.0 (muted) by default, up to 2.0
+                        vol = self._stream_volumes.get(did, 0.0)
+                        if vol > 0.001:
+                            if len(chunk) == frames:
+                                if vol != 1.0:
+                                    chunk = (chunk * vol).astype(np.int32)
+                                mixed += chunk.astype(np.int32)
                     except queue.Empty:
                         pass
 
@@ -231,9 +252,7 @@ class AudioManager:
         outdata[:, 0] = clipped
 
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Async capture loop (VAD + send)
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _capture_loop(self):
         while self._running:
@@ -283,9 +302,83 @@ class AudioManager:
                     audio_bytes = np.clip(faded, -32768, 32767).astype(np.int16).tobytes()
                     asyncio.ensure_future(self.on_audio_frame(audio_bytes))
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # System Audio Capture Management (Helper Process)
+
+    async def start_system_audio(self, pid: int, mode: int = 1):
+        """Start the C# helper to capture audio of a process or exclude our app."""
+        await self.stop_system_audio()
+        
+        import os
+        helper_path = os.path.join(os.path.dirname(__file__), "audio_helper.exe")
+        if not os.path.exists(helper_path):
+            logger.error("Audio helper EXE not found")
+            return
+
+        try:
+            self._system_capture_proc = await asyncio.create_subprocess_exec(
+                helper_path, str(pid), str(mode),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            asyncio.ensure_future(self._read_system_audio())
+            logger.info(f"System audio capture started for PID {pid} (Mode {mode})")
+        except Exception as e:
+            logger.error(f"Failed to start audio helper: {e}")
+
+    async def stop_system_audio(self):
+        if self._system_capture_proc:
+            try:
+                self._system_capture_proc.terminate()
+                await self._system_capture_proc.wait()
+            except Exception:
+                pass
+            self._system_capture_proc = None
+
+    async def _read_system_audio(self):
+        while self._system_capture_proc:
+            try:
+                # 48000 Hz, 16-bit Mono, chunk size 960 frames = 1920 bytes
+                chunk_bytes = await self._system_capture_proc.stdout.readexactly(1920)
+                if self.on_stream_audio_ready:
+                    asyncio.ensure_future(self.on_stream_audio_ready(chunk_bytes))
+            except asyncio.IncompleteReadError:
+                break
+            except Exception as e:
+                logger.error(f"Read system audio error: {e}")
+                break
+        self._system_capture_proc = None
+
+    # Stream Playback controls
+
+    def receive_peer_stream_audio(self, device_id: str, audio_bytes: bytes):
+        """Thread-safe. Push incoming stream audio into the peer's stream jitter buffer."""
+        chunk = np.frombuffer(audio_bytes, dtype=np.int16)
+        if len(chunk) != AUDIO_CHUNK_FRAMES:
+            return
+        with self._peer_lock:
+            if device_id not in self._stream_queues:
+                self._stream_queues[device_id] = queue.Queue(maxsize=_JITTER_MAX)
+            q = self._stream_queues[device_id]
+        try:
+            q.put_nowait(chunk)
+        except queue.Full:
+            try:
+                q.get_nowait()
+                q.put_nowait(chunk)
+            except queue.Empty:
+                pass
+
+    def set_peer_stream_volume(self, device_id: str, volume: float):
+        """Set volume multiplier for peer's screen stream (0.0 to 2.0)."""
+        with self._peer_lock:
+            self._stream_volumes[device_id] = max(0.0, volume)
+
+    def get_peer_stream_volume(self, device_id: str) -> float:
+        with self._peer_lock:
+            # Default to 0.0 (muted) as requested: "initially sound not enabled"
+            return self._stream_volumes.get(device_id, 0.0)
+
     # Called from mesh when audio frame arrives from a peer
-    # ─────────────────────────────────────────────────────────────────────────
 
     def receive_peer_audio(self, device_id: str, audio_bytes: bytes):
         """Thread-safe. Called from asyncio but output callback is real-time."""
@@ -333,9 +426,7 @@ class AudioManager:
         with self._peer_lock:
             return device_id in self._local_mutes
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Properties
-    # ─────────────────────────────────────────────────────────────────────────
 
     @property
     def in_voice(self) -> bool:

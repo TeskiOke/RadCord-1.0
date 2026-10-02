@@ -1,4 +1,4 @@
-"""
+﻿"""
 settings_dialog.py — Tabbed settings window.
 
 Tabs:
@@ -171,7 +171,6 @@ class SettingsDialog(QDialog):
         self.setStyleSheet(STYLE.replace("#7289da", self._app_color))
         self._build_ui()
 
-    # ─────────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -211,7 +210,6 @@ class SettingsDialog(QDialog):
         super().closeEvent(event)
 
 
-    # ── Tab helpers ──────────────────────────────────────────────────────────
 
     def _tab_profile(self) -> QWidget:
         w = QWidget(objectName="tab-content")
@@ -485,11 +483,9 @@ class SettingsDialog(QDialog):
         return w
 
 
-    # ── Audio Mixer ───────────────────────────────────────────────────────────
 
     # REMOVED _tab_audio_mixer (Merged into speaker)
 
-    # ── Hotkeys ───────────────────────────────────────────────────────────────
 
     def _tab_hotkeys(self) -> QWidget:
         w = QWidget(objectName="tab-content")
@@ -571,7 +567,6 @@ class SettingsDialog(QDialog):
         lay.addStretch()
         return w
 
-    # ── Network scan ──────────────────────────────────────────────────────────
 
     def _start_scan(self):
         self._scan_btn.setEnabled(False)
@@ -639,7 +634,6 @@ class SettingsDialog(QDialog):
         else:
             self._scan_status.setText("❌ Неверный пароль")
 
-    # ── Save ─────────────────────────────────────────────────────────────────
 
     def _on_save(self):
         changed = []
@@ -732,7 +726,6 @@ class SettingsDialog(QDialog):
 
 
 
-    # ── Widget helpers ────────────────────────────────────────────────────────
 
     def _on_color_clicked(self, color: str):
         self._avatar_color = color

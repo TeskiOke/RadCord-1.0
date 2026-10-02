@@ -1,4 +1,4 @@
-"""
+﻿"""
 screenshare.py — Screen/window capture with configurable quality, FPS, and source.
 
 Source dict (from ScreenPickerDialog):
@@ -50,7 +50,6 @@ class ScreenCapture:
     def stop(self):
         self._running = False
 
-    # ─────────────────────────────────────────────────────────────────────────
 
     def _loop_fn(self):
         src = self._source

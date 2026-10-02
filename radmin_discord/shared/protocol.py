@@ -13,6 +13,7 @@ MSG_PONG = "pong"
 # Binary frame types
 BIN_AUDIO = 0x01
 BIN_SCREEN = 0x02
+BIN_STREAM_AUDIO = 0x03
 
 # Network constants
 WS_PORT = 8765

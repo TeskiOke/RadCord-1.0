@@ -26,6 +26,10 @@ class AppSignals(QObject):
     screen_frame_received = Signal(str, bytes)
     # args: device_id, jpeg_bytes
 
+    # Incoming stream audio (PCM bytes)
+    stream_audio_received = Signal(str, bytes)
+    # args: device_id, pcm_bytes
+
     # Self speaking indicator (from VAD)
     self_speaking_changed = Signal(bool)
 

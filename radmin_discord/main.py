@@ -1,4 +1,4 @@
-"""
+﻿"""
 main.py — Entry point for Radmin Discord.
 
 1. Load or create config (SetupDialog on first run)
@@ -58,7 +58,6 @@ def main():
     font = QFont("Segoe UI", 10)
     app.setFont(font)
 
-    # ── Config ────────────────────────────────────────────────────────────────
     from core.identity import load_config
     
     config = load_config()
@@ -70,7 +69,6 @@ def main():
             sys.exit(0)
         config = dlg.get_config()
 
-    # ── asyncio event loop in background thread ───────────────────────────────
     async_loop = asyncio.new_event_loop()
 
     def _run_loop():
@@ -80,14 +78,12 @@ def main():
     bg_thread = threading.Thread(target=_run_loop, daemon=True, name="AsyncLoop")
     bg_thread.start()
 
-    # ── Main window ───────────────────────────────────────────────────────────
     from ui.app import MainWindow
     window = MainWindow(config, async_loop)
     window.show()
 
     exit_code = app.exec()
 
-    # ── Clean shutdown ────────────────────────────────────────────────────────
     async_loop.call_soon_threadsafe(async_loop.stop)
     bg_thread.join(timeout=2)
     

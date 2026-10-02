@@ -1,0 +1,44 @@
+{
+  "profile": {
+    "nickname": "teskioker",
+    "avatar_color": "#7289da",
+    "device_id": "a63532460ffa4f77",
+    "theme": "dark",
+    "app_color": "#2fda1c",
+    "audio_input_device": 1,
+    "audio_output_device": 4,
+    "vad_threshold": 50,
+    "hotkeys": {
+      "hotkey_mute": "mouse3"
+    },
+    "master_volume": 100,
+    "ui_volume": 101
+  },
+  "networks": [
+    {
+      "name": "0000",
+      "password": "0000",
+      "id": "4eca1a61232ab8bfbbc70acbf169721f",
+      "voice_channels": [
+        "Голосовой",
+        "1111"
+      ]
+    },
+    {
+      "name": "кцукцук",
+      "password": "1234",
+      "id": "b8c4af7bdc441741693c63fed8772127",
+      "voice_channels": [
+        "Голосовой"
+      ]
+    },
+    {
+      "name": "ддддд",
+      "password": "1234",
+      "id": "4ac396bbc0e6491d69d863d6e7c1a105",
+      "voice_channels": [
+        "Голосовой"
+      ]
+    }
+  ]
+}

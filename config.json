@@ -1,0 +1,29 @@
+{
+  "profile": {
+    "nickname": "teski",
+    "avatar_color": "#e91e63",
+    "device_id": "f29884d951971c06",
+    "theme": "dark",
+    "app_color": "#ffef41",
+    "audio_input_device": 1,
+    "audio_output_device": 4,
+    "vad_threshold": 4,
+    "hotkeys": {
+      "hotkey_deafen": "",
+      "hotkey_mute": "mouse3"
+    },
+    "master_volume": 135,
+    "ui_volume": 6,
+    "peers_volume": 100
+  },
+  "networks": [
+    {
+      "name": "кцукцук",
+      "password": "1234",
+      "id": "b8c4af7bdc441741693c63fed8772127",
+      "voice_channels": [
+        "Голосовой"
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-"""
+﻿"""
 voice_grid.py — Grid of participant cards for the active voice channel.
 Replaces the ChatView when looking at a voice channel.
 """
@@ -7,7 +7,8 @@ from typing import Dict
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
-    QGridLayout, QMenu, QWidgetAction, QSlider, QStackedWidget, QSizePolicy
+    QGridLayout, QMenu, QWidgetAction, QSlider, QStackedWidget, QSizePolicy,
+    QPushButton
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap, QImage
@@ -21,8 +22,8 @@ class GridContainer(QWidget):
     """Responsive grid that auto-reshuffles cards when the widget resizes."""
 
     CARD_MIN_W = 220
-    SPACING    = 16
-    MARGIN     = 24
+    SPACING    = 24
+    MARGIN     = 32
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,7 +34,6 @@ class GridContainer(QWidget):
             self.MARGIN, self.MARGIN, self.MARGIN, self.MARGIN
         )
 
-    # ── public API ──────────────────────────────────────────────────────────
 
     def addCard(self, card: QWidget):
         card.setParent(self)
@@ -47,7 +47,6 @@ class GridContainer(QWidget):
             card.hide()
             self._relayout()
 
-    # ── internal ────────────────────────────────────────────────────────────
 
     def _relayout(self):
         # Strip all current grid positions without deleting widgets
@@ -72,7 +71,8 @@ class GridContainer(QWidget):
         for i, item in enumerate(self._items):
             r, c = divmod(i, cols)
             # Add with offset of +1 to allow row/col 0 for stretch spacers
-            self._grid.addWidget(item, r + 1, c + 1, Qt.AlignCenter)
+            # Add without alignment to let the card expand
+            self._grid.addWidget(item, r + 1, c + 1)
             item.show()
 
         # Add flexible margins around the grid to constantly keep cards centered
@@ -89,6 +89,7 @@ class VoicePeerCard(QWidget):
     """Single participant tile displayed in the voice grid."""
 
     volume_changed = Signal(str, float)
+    stream_volume_changed = Signal(str, float)
     watch_screen_requested = Signal(str)
 
     def __init__(self, device_id: str, nickname: str, avatar_color: str,
@@ -103,53 +104,57 @@ class VoicePeerCard(QWidget):
         self._is_sharing = False
         self._is_muted   = False
         self._is_speaking = False
+        self._local_stream_vol = 0.0 # Initially muted
 
-        # Fixed size boundaries, but allow expansion
-        self.setMinimumSize(220, 180)
-        self.setMaximumSize(800, 450)
+        # Boundaries - significantly larger and flexible
+        self.setMinimumSize(400, 300)
+        self.setMaximumSize(1920, 1080)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
+        
         self._build_ui()
-
-    # ── build ────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        # ── Card background ──
         self._bg = QWidget()
         self._bg.setObjectName("cardBg")
         self._bg.setStyleSheet("#cardBg { background: #000000; border-radius: 10px; border: 3px solid transparent; }")
-        bg_lay = QVBoxLayout(self._bg)
-        bg_lay.setContentsMargins(8, 12, 8, 8)
-        bg_lay.setSpacing(6)
+        
+        self._card_layout = QVBoxLayout(self._bg)
+        self._card_layout.setContentsMargins(0, 0, 0, 0)
+        self._card_layout.setSpacing(0)
 
-        # ── View stack: avatar OR screen share ──
         self._view_stack = QStackedWidget()
-
-        # Page 0 — avatar (centered)
+        
+        # Page 0 - Avatar
         av_page = QWidget()
         av_page_lay = QVBoxLayout(av_page)
         av_page_lay.setContentsMargins(0, 0, 0, 0)
         av_page_lay.setAlignment(Qt.AlignCenter)
-
         self._avatar = AvatarLabel(self.nickname[:1], self.avatar_color)
         self._avatar.setFixedSize(74, 74)
         av_page_lay.addWidget(self._avatar, 0, Qt.AlignCenter)
-        
-        self._view_stack.addWidget(av_page)          # index 0
+        self._view_stack.addWidget(av_page)
 
         # Page 1 — screen share
+        self._screen_container = QWidget()
+        self._screen_container_main_lay = QVBoxLayout(self._screen_container)
+        self._screen_container_main_lay.setContentsMargins(0,0,0,0)
+        
         self._screen_lbl = QLabel()
         self._screen_lbl.setAlignment(Qt.AlignCenter)
         self._screen_lbl.setStyleSheet("background: #000000; border-radius: 6px;")
-        self._view_stack.addWidget(self._screen_lbl) # index 1
-
+        self._screen_container_main_lay.addWidget(self._screen_lbl)
+        
+        self._view_stack.addWidget(self._screen_container)
         self._view_stack.setCurrentIndex(0)
-        bg_lay.addWidget(self._view_stack, 1)
+        self._card_layout.addWidget(self._view_stack, 1)
 
-        # ── Name pill at the bottom ──
+        pill_container = QWidget()
+        pill_container_lay = QVBoxLayout(pill_container)
+        pill_container_lay.setContentsMargins(8, 0, 8, 8)
+        
         pill = QWidget()
         pill.setAttribute(Qt.WA_StyledBackground, True)
         pill.setStyleSheet("background: rgba(0, 0, 0, 0.55); border-radius: 4px;")
@@ -157,26 +162,36 @@ class VoicePeerCard(QWidget):
         p_lay = QHBoxLayout(pill)
         p_lay.setContentsMargins(8, 0, 8, 0)
         p_lay.setSpacing(4)
-
         name_lbl = QLabel(self.nickname)
-        name_lbl.setStyleSheet(
-            "color: white; font-size: 12px; font-weight: 600;"
-            " font-family: 'Segoe UI'; background: transparent;"
-        )
+        name_lbl.setStyleSheet("color: white; font-size: 11px; font-weight: 600; background: transparent;")
         p_lay.addWidget(name_lbl)
-
         self._mute_icon = QLabel("🔇")
-        self._mute_icon.setStyleSheet(
-            "color: #f04747; font-size: 10px; background: transparent;"
-        )
+        self._mute_icon.setStyleSheet("color: #f04747; font-size: 10px; background: transparent;")
         self._mute_icon.hide()
         p_lay.addWidget(self._mute_icon)
         p_lay.addStretch()
+        pill_container_lay.addWidget(pill, 0, Qt.AlignLeft | Qt.AlignBottom)
+        
+        self._card_layout.addWidget(pill_container)
+        outer.addWidget(self._bg, 1)
 
-        bg_lay.addWidget(pill)
-        outer.addWidget(self._bg)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Layout handles everything now
 
-    # ── public state ─────────────────────────────────────────────────────────
+    def set_sharing(self, sharing: bool):
+        self._is_sharing = sharing
+        self._view_stack.setCurrentIndex(1 if sharing else 0)
+
+    def _toggle_stream_mute(self, muted: bool):
+        # General helper for volume
+        self._local_stream_vol = 0.0 if muted else 1.0
+        self.stream_volume_changed.emit(self.device_id, self._local_stream_vol)
+
+    def _on_stream_vol_changed(self, v_pct):
+        self._local_stream_vol = v_pct / 100.0
+        self.stream_volume_changed.emit(self.device_id, self._local_stream_vol)
+
 
     def set_speaking(self, speaking: bool):
         self._is_speaking = speaking
@@ -215,11 +230,10 @@ class VoicePeerCard(QWidget):
             )
             self._screen_lbl.setPixmap(scaled)
 
-    # ── context menu (volume, local mute) ───────────────────────────────────
 
     def contextMenuEvent(self, event):
-        if self._is_self:
-            return
+        # We'll allow it for self for testing stream/voice controls
+        # if self._is_self: return
 
         menu = QMenu(self)
         # Only override the embedded QLabel font — global QMenu colours apply
@@ -278,6 +292,54 @@ class VoicePeerCard(QWidget):
         act_slider = QWidgetAction(menu)
         act_slider.setDefaultWidget(vol_widget)
         menu.addAction(act_slider)
+        
+        if self._is_sharing:
+            menu.addSeparator()
+            
+            # Title for Stream
+            st_title = QLabel("Громкость трансляции")
+            st_title.setStyleSheet("padding-left: 8px; color: #b9bbbe;")
+            act_st_title = QWidgetAction(menu)
+            act_st_title.setDefaultWidget(st_title)
+            menu.addAction(act_st_title)
+            
+            st_vol_widget = QWidget()
+            st_vol_widget.setFixedWidth(260)
+            st_vol_lay = QHBoxLayout(st_vol_widget)
+            st_vol_lay.setContentsMargins(8, 4, 8, 4)
+            st_vol_lay.setSpacing(8)
+            
+            st_slider = QSlider(_Qt.Horizontal)
+            st_slider.setRange(0, 200)
+            # We use local variable for current stream vol
+            st_slider.setValue(int(self._local_stream_vol * 100))
+            st_slider.setFixedWidth(170)
+            st_slider.setStyleSheet(
+                "QSlider::groove:horizontal { background: #4f545c; height: 4px; border-radius: 2px; }"
+                f"QSlider::handle:horizontal {{ background: {self._accent}; width: 14px;"
+                f"  height: 14px; border-radius: 7px; margin: -5px 0; }}"
+                f"QSlider::sub-page:horizontal {{ background: {self._accent}; border-radius: 2px; }}"
+            )
+            
+            st_pct_lbl = QLabel(f"{int(self._local_stream_vol * 100)}%")
+            st_pct_lbl.setStyleSheet(
+                f"color: {self._accent}; font-size: 12px; font-weight: 700;"
+                " font-family: 'Segoe UI'; min-width: 42px;"
+            )
+            
+            def _on_st_change(v):
+                st_pct_lbl.setText(f"{v}%")
+                self._local_stream_vol = v / 100.0
+                self.stream_volume_changed.emit(self.device_id, self._local_stream_vol)
+                
+            st_slider.valueChanged.connect(_on_st_change)
+            st_vol_lay.addWidget(st_slider)
+            st_vol_lay.addWidget(st_pct_lbl)
+            
+            act_st_slider = QWidgetAction(menu)
+            act_st_slider.setDefaultWidget(st_vol_widget)
+            menu.addAction(act_st_slider)
+
         menu.addSeparator()
 
         if main_win:
@@ -298,12 +360,12 @@ class VoicePeerCard(QWidget):
         super().mousePressEvent(event)
 
 
-# ── Container ──────────────────────────────────────────────────────────────────
 
 class VoiceGridWidget(QWidget):
     """Scrollable grid container for VoicePeerCards."""
 
     volume_changed = Signal(str, float)
+    stream_volume_changed = Signal(str, float)
     watch_screen_requested = Signal(str)
 
     def __init__(self, accent_color: str = "#7289da", parent=None):
@@ -329,7 +391,6 @@ class VoiceGridWidget(QWidget):
         self.scroll.setWidget(self.container)
         lay.addWidget(self.scroll)
 
-    # ── accent propagation ───────────────────────────────────────────────────
 
     def set_accent(self, color: str):
         self._accent = color
@@ -337,7 +398,6 @@ class VoiceGridWidget(QWidget):
             card._accent = color
             card.set_speaking(card._is_speaking)
 
-    # ── peer management ──────────────────────────────────────────────────────
 
     def add_peer(self, peer_info: dict, is_self: bool = False):
         did = peer_info["device_id"]
@@ -350,10 +410,15 @@ class VoiceGridWidget(QWidget):
             accent_color=self._accent,
             is_self=is_self,
         )
-        card.volume_changed.connect(self.volume_changed.emit)
-        card.watch_screen_requested.connect(self.watch_screen_requested.emit)
+        card.volume_changed.connect(self.peer_volume_changed)
+        card.stream_volume_changed.connect(self.peer_stream_volume_changed)
+        card.watch_screen_requested.connect(self.watch_screen_requested)
         self._cards[did] = card
         self.container.addCard(card)
+        
+        # Initial sharing state
+        if peer_info.get("sharing"):
+            card.set_sharing(True)
 
     def remove_peer(self, device_id: str):
         if device_id in self._cards:
@@ -364,6 +429,12 @@ class VoiceGridWidget(QWidget):
     def update_voice(self, device_id: str, speaking: bool):
         if device_id in self._cards:
             self._cards[device_id].set_speaking(speaking)
+
+    def peer_volume_changed(self, device_id: str, volume: float):
+        self.volume_changed.emit(device_id, volume)
+
+    def peer_stream_volume_changed(self, device_id: str, volume: float):
+        self.stream_volume_changed.emit(device_id, volume)
 
     def update_muted(self, device_id: str, muted: bool):
         if device_id in self._cards:

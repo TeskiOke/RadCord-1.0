@@ -1,19 +1,90 @@
-# RadCord
+# RadCord 1.0
 
-P2P communication tool (Text, Voice, Screenshare) designed for use over Radmin VPN or local networks.
+P2P-коммуникатор для локальных сетей и Radmin VPN. Первая версия, написана на Python с PySide6-интерфейсом. Не требует выделенного сервера — участники находят друг друга напрямую через сканирование подсети.
 
-## Features
-- **P2P Mesh Network**: No central server, direct connections between peers.
-- **Voice Chat**: Real-time voice communication with VAD (Voice Activity Detection).
-- **Screenshare**: Share your screen or specific windows with peers.
-- **Global Hotkeys**: Bind Mute/Deafen to any key or mouse button (Mouse 4/5 supported).
-- **Advanced Audio Mixer**: 0-200% volume control for each participant.
-- **Cursor Capture**: Visualizes the cursor during screenshare.
-- **Security**: Designed for private, trusted networks (Radmin VPN / LAN).
+---
 
-## Current Status
-Check [PROJECT_STATUS.md](PROJECT_STATUS.md) for detailed implementation progress and known limitations.
+## Возможности
 
-## How to run
-1. Install requirements: `pip install -r radmin_discord/requirements.txt`
-2. Run `python radmin_discord/main.py`
+- **Текстовые каналы** — чат с историей и кешированием сообщений на диске
+- **Голосовой чат** — реальное время, VAD (Voice Activity Detection)
+- **Демонстрация экрана** — трансляция экрана или отдельного окна через mss + JPEG
+- **Захват курсора** — курсор виден при трансляции экрана
+- **Аудиомикшер** — раздельная регулировка громкости каждого участника (0–200%)
+- **Горячие клавиши** — глобальные бинды мут/дифенс (включая Mouse4/5)
+- **Автообнаружение** — сканирует локальную подсеть и подключается автоматически
+- **P2P mesh** — нет центрального сервера, прямые соединения между всеми участниками
+
+---
+
+## Структура
+
+```
+radmin_discord/
+├── main.py               # Точка входа: asyncio loop + PySide6 QApplication
+├── core/
+│   ├── mesh.py           # P2P WebSocket mesh (сервер + клиент)
+│   ├── audio.py          # Захват/воспроизведение аудио, VAD
+│   ├── audio_capture.cs  # Нативный захват системного звука (ProcessLoopback)
+│   ├── screenshare.py    # Захват экрана через mss
+│   ├── discovery.py      # Сканирование подсети, поиск участников
+│   ├── identity.py       # Конфиг: device_id, ник, аватар
+│   ├── message_cache.py  # Кеш сообщений
+│   └── logger_setup.py   # Логирование
+├── ui/
+│   ├── app.py            # Главное окно
+│   ├── chat_view.py      # Виджет текстового чата
+│   ├── voice_bar.py      # Панель голосового чата
+│   ├── voice_grid.py     # Сетка участников в голосе
+│   ├── sidebar.py        # Боковая панель с каналами
+│   ├── server_bar.py     # Панель сетей (левая колонка)
+│   ├── screen_view.py    # Просмотр экрана другого участника
+│   ├── screen_picker.py  # Выбор окна для трансляции
+│   ├── settings_dialog.py # Настройки (аудио, ник, горячие клавиши)
+│   ├── network_dialog.py # Диалог управления сетями
+│   └── signals.py        # Qt-сигналы для межпоточного взаимодействия
+└── shared/
+    └── protocol.py       # Описание протокола (типы пакетов, упаковка)
+```
+
+---
+
+## Запуск
+
+```bash
+pip install -r radmin_discord/requirements.txt
+python radmin_discord/main.py
+```
+
+При первом запуске — диалог ввода ника и выбора сети.
+
+---
+
+## Зависимости
+
+```
+websockets>=12.0
+PySide6>=6.6.0
+sounddevice>=0.4.6
+numpy>=1.26.0
+Pillow>=10.0.0
+mss>=9.0.0
+```
+
+---
+
+## Сборка в .exe
+
+```bat
+build.bat
+```
+
+Использует PyInstaller (`RadminDiscord.spec`), собирает в `dist/`.
+
+---
+
+## Архитектура сети
+
+Каждый участник при запуске поднимает WebSocket-сервер, сканирует подсеть и подключается к найденным серверам. Все соединения равноправны — нет мастера или координатора.
+
+Протокол: текст — JSON, голос/экран — raw bytes с 2-байтным префиксом типа.

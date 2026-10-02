@@ -1,21 +1,29 @@
+﻿# Python build artifacts
 __pycache__/
 *.py[cod]
-*$py.class
-.pytest_cache/
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Logs
+logs/
+*.log
+crash_*.log
+
+# Virtual environments
+venv/
+.venv/
+
+# Cache
+cache/
+
+# IDE
 .vscode/
 .idea/
 
-# Distribution / packaging
-build/
-dist/
-*.spec
-
-# Project specific
-config.json
-cache/
-logs/
-
-# Optional: if you use a virtual environment
-venv/
-.venv/
-env/
+# OS
+Thumbs.db
+desktop.ini

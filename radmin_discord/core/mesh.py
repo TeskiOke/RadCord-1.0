@@ -1,4 +1,4 @@
-"""
+﻿"""
 mesh.py — P2P WebSocket mesh network.
 
 Each node:
@@ -18,7 +18,7 @@ from typing import Callable, Dict, Optional, Set
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from shared.protocol import WS_PORT, MSG_IDENTIFY, BIN_AUDIO, BIN_SCREEN
+from shared.protocol import WS_PORT, MSG_IDENTIFY, BIN_AUDIO, BIN_SCREEN, BIN_STREAM_AUDIO
 
 logger = logging.getLogger("mesh")
 
@@ -34,9 +34,9 @@ class Peer:
     voice_channel: str = ""
     in_voice: bool = False
     is_speaking: bool = False
-    is_sharing_screen: bool = False
     muted: bool = False
     deafened: bool = False
+    is_sharing: bool = False
     ping: int = 0
     _ping_sent_at: float = 0
 
@@ -58,7 +58,6 @@ class MeshNetwork:
         self._seen_ids: Set[str] = set()
         self._seen_queue: deque = deque(maxlen=2000)
 
-        # ── Callbacks (set by the app) ────────────────────────────────────────
         self.on_peer_join:          Optional[Callable[[Peer], None]] = None
         self.on_peer_leave:         Optional[Callable[[Peer], None]] = None
         self.on_text_message:       Optional[Callable[[Peer, dict], None]] = None
@@ -66,10 +65,9 @@ class MeshNetwork:
         self.on_screen_frame:       Optional[Callable[[Peer, bytes], None]] = None
         self.on_voice_state:        Optional[Callable[[Peer], None]] = None
         self.on_screen_state_change:Optional[Callable[[Peer], None]] = None
+        self.on_stream_audio_frame: Optional[Callable[[Peer, bytes], None]] = None
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Public start
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def start_server(self):
         """Start WS server and run forever."""
@@ -110,9 +108,7 @@ class MeshNetwork:
             return  # Different network entirely — ignore
         asyncio.ensure_future(self._connect_to(ip, info.get("ws_port", WS_PORT)))
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Outgoing connection
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _connect_to(self, ip: str, port: int):
         # Already connected or connecting?
@@ -167,9 +163,7 @@ class MeshNetwork:
         finally:
             self._connecting.discard(ip)
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Incoming connection handler (WS server callback)
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _handle_incoming(self, ws, path=""):
         try:
@@ -214,17 +208,19 @@ class MeshNetwork:
         except Exception as e:
             logger.error(f"Incoming handler error: {type(e).__name__}: {e}")
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Per-peer message loop
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _handle_peer(self, peer: Peer):
         try:
             async for message in peer.ws:
-                if isinstance(message, bytes):
-                    self._handle_binary(peer, message)
-                else:
-                    self._handle_json(peer, message)
+                try:
+                    if isinstance(message, bytes):
+                        self._handle_binary(peer, message)
+                    else:
+                        self._handle_json(peer, message)
+                except Exception as e:
+                    logger.error(f"Error processing message from {peer.nickname}: {e}")
+                    # Continue loop, don't kill peer connection for one bad frame
         except (ConnectionClosed, Exception) as e:
             logger.debug(f"Peer {peer.nickname} disconnected: {e}")
         finally:
@@ -284,12 +280,12 @@ class MeshNetwork:
                     self.on_voice_state(peer)
 
             elif t == "screen_start":
-                peer.is_sharing_screen = True
+                peer.is_sharing = True
                 if self.on_screen_state_change:
                     self.on_screen_state_change(peer)
 
             elif t == "screen_stop":
-                peer.is_sharing_screen = False
+                peer.is_sharing = False
                 if self.on_screen_state_change:
                     self.on_screen_state_change(peer)
 
@@ -323,16 +319,27 @@ class MeshNetwork:
             self.on_voice_frame(peer, payload)
         elif frame_type == BIN_SCREEN and self.on_screen_frame:
             self.on_screen_frame(peer, payload)
+        elif frame_type == BIN_STREAM_AUDIO and self.on_stream_audio_frame:
+            self.on_stream_audio_frame(peer, payload)
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Send helpers
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _send_to(self, peer: Peer, msg: dict):
         try:
             await peer.ws.send(json.dumps(msg))
         except Exception:
             pass
+
+    async def broadcast_binary(self, frame_type: int, payload: bytes, network_id: str = None):
+        """Send a binary frame to all peers in the specified network."""
+        data = bytes([frame_type]) + payload
+        for peer in list(self.peers.values()):
+            if network_id and peer.network_ids and network_id not in peer.network_ids:
+                continue
+            try:
+                await peer.ws.send(data)
+            except Exception:
+                pass
 
     async def broadcast_json(self, msg: dict, network_id: str = None):
 
@@ -370,21 +377,15 @@ class MeshNetwork:
 
     async def broadcast_audio_to_voice(self, payload: bytes, network_id: str = None):
         """Send audio only to peers currently in the voice channel of the target network."""
-        data = bytes([BIN_AUDIO]) + payload
-        for peer in list(self.peers.values()):
-            # Allow sending if peer.network_ids is empty (timing race fallback)
-            if network_id and peer.network_ids and network_id not in peer.network_ids:
-                continue
-            if peer.in_voice:
-                try:
-                    await peer.ws.send(data)
-                except Exception:
-                    pass
+        await self.broadcast_binary(BIN_AUDIO, payload, network_id)
+
+    async def broadcast_stream_audio(self, payload: bytes, network_id: str = None):
+        """Send stream audio to peers in the voice channel (or anyone watching)."""
+        # For simplicity, we send to everyone in the same voice network/channel
+        await self.broadcast_binary(BIN_STREAM_AUDIO, payload, network_id)
 
 
-    # ─────────────────────────────────────────────────────────────────────────
     # High-level actions
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def send_text(self, channel: str, content: str, network_id: str) -> dict:
         msg = {
@@ -425,9 +426,7 @@ class MeshNetwork:
 
 
 
-    # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
-    # ─────────────────────────────────────────────────────────────────────────
 
     async def _register_peer(self, peer: Peer):
         if peer.device_id in self.peers:

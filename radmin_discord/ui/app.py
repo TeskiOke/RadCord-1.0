@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QColor
 
 
 from shared.protocol import (
-    WS_PORT, BIN_AUDIO, BIN_SCREEN, CHANNEL_DESCS,
+    WS_PORT, BIN_AUDIO, BIN_SCREEN, BIN_STREAM_AUDIO, CHANNEL_DESCS,
     AVATAR_COLORS
 )
 from core.mesh import MeshNetwork, Peer
@@ -186,10 +186,14 @@ class MainWindow(QMainWindow):
         self._mesh.on_voice_state         = lambda p: signals.voice_state_changed.emit(
             p.device_id, p.in_voice, p.is_speaking)
         self._mesh.on_screen_state_change = lambda p: signals.screen_state_changed.emit(
-            p.device_id, p.is_sharing_screen)
+            p.device_id, p.is_sharing)
         self._mesh.on_voice_frame         = self._on_voice_frame
         self._mesh.on_screen_frame        = lambda p, b: signals.screen_frame_received.emit(
             p.device_id, b)
+        self._mesh.on_stream_audio_frame  = lambda p, b: self._audio.receive_peer_stream_audio(
+            p.device_id, b)
+
+        self._audio.on_stream_audio_ready = self._send_stream_audio
 
 
         asyncio.run_coroutine_threadsafe(self._mesh.start_server(), self._loop)
@@ -227,11 +231,10 @@ class MainWindow(QMainWindow):
         # Build initial server bar
         self._server_bar.set_networks(self._config.get("networks", []))
 
-        # Check saved voice state
-        saved_voice = self._config["profile"].get("last_voice")
-        if saved_voice:
-            # Delay slightly so UI is fully drawn
-            QTimer.singleShot(100, lambda: self._auto_join_voice(saved_voice["net_id"], saved_voice["ch_name"]))
+        # Check saved voice state - DISABLED auto-join as requested
+        # saved_voice = self._config["profile"].get("last_voice")
+        # if saved_voice:
+        #     QTimer.singleShot(100, lambda: self._auto_join_voice(saved_voice["net_id"], saved_voice["ch_name"]))
 
     def _auto_join_voice(self, net_id: str, channel_name: str):
         net_info = next((n for n in self._config.get("networks", []) if n["id"] == net_id), None)
@@ -588,6 +591,7 @@ class MainWindow(QMainWindow):
 
         self._voice_bar.screen_share_requested.connect(self._toggle_screen_share)
         self._voice_bar.settings_requested.connect(self._open_settings)
+        self._voice_grid.stream_volume_changed.connect(self._audio.set_peer_stream_volume)
 
     def _load_cached_messages(self):
         if not self._current_net_id:
@@ -799,10 +803,23 @@ class MainWindow(QMainWindow):
             self._screen.start()
             self._on_screen_state(self._config["profile"]["device_id"], True)
             asyncio.run_coroutine_threadsafe(self._mesh.start_screen_share(self._voice_net_id), self._loop)
+
+            # --- Start Audio Capture ---
+            import os
+            my_pid = os.getpid()
+            if source.get("type") == "window":
+                target_pid = source.get("pid", 0)
+                # Mode 0 = Include only this process
+                asyncio.run_coroutine_threadsafe(self._audio.start_system_audio(target_pid, 0), self._loop)
+            else:
+                # Mode 1 = Exclude OUR application from desktop capture
+                asyncio.run_coroutine_threadsafe(self._audio.start_system_audio(my_pid, 1), self._loop)
+
         else:
             self._sharing = False
             self._voice_bar.set_screen_sharing(False)
             self._screen.stop()
+            asyncio.run_coroutine_threadsafe(self._audio.stop_system_audio(), self._loop)
             self._on_screen_state(self._config["profile"]["device_id"], False)
             asyncio.run_coroutine_threadsafe(self._mesh.stop_screen_share(self._voice_net_id), self._loop)
 
@@ -1055,6 +1072,10 @@ class MainWindow(QMainWindow):
         signals.screen_frame_received.emit(self._config["profile"]["device_id"], jpeg_bytes)
         if self._mesh: await self._mesh.broadcast_binary(BIN_SCREEN, jpeg_bytes)
 
+    async def _send_stream_audio(self, audio_bytes: bytes):
+        if self._sharing and self._mesh:
+            await self._mesh.broadcast_stream_audio(audio_bytes, self._voice_net_id)
+
 
     def _toggle_max(self):
         self.showNormal() if self.isMaximized() else self.showMaximized()
@@ -1124,5 +1145,6 @@ class MainWindow(QMainWindow):
             "avatar_color": peer.avatar_color,
             "ip":           peer.ip,
             "network_ids":  list(peer.network_ids),
+            "sharing":      peer.is_sharing,
         }
 

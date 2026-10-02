@@ -1,4 +1,4 @@
-"""
+﻿"""
 voice_bar.py — Bottom-left panel containing the active voice status and user profile.
 """
 import logging
@@ -91,7 +91,6 @@ class VoiceBar(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Active Call Module (Hidden by default) ──
         self._call_panel = QWidget(objectName="active-call")
         call_lay = QVBoxLayout(self._call_panel)
         call_lay.setContentsMargins(8, 8, 8, 8)
@@ -135,7 +134,6 @@ class VoiceBar(QWidget):
         self._call_panel.hide()
         root.addWidget(self._call_panel)
 
-        # ── User Profile Panel ──
         self._user_panel = QWidget()
         self._user_panel.setFixedHeight(52)
         user_lay = QHBoxLayout(self._user_panel)
